@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Endless Runner Greybox</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            font-family: Arial, sans-serif;
+            user-select: none;
+        }
+        #ui {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            text-align: center;
+            display: none;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 30px 50px;
+            border-radius: 15px;
+            cursor: pointer;
+            border: 2px solid #fff;
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            z-index: 10;
+        }
+        #ui h1 {
+            margin-top: 0;
+            font-size: 48px;
+            color: #ff3333;
+            text-transform: uppercase;
+        }
+        #ui p {
+            font-size: 24px;
+            margin-bottom: 0;
+            animation: blink 1s infinite alternate;
+        }
+        @keyframes blink {
+            from { opacity: 1; }
+            to { opacity: 0.3; }
+        }
+        #scoreBoard {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 28px;
+            font-weight: bold;
+            z-index: 5;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        #controlsHelp {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 16px;
+            text-align: center;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="scoreBoard">Score: 0</div>
+    <div id="controlsHelp">Controls: <br/> A/D or Left/Right: Move | W or Up: Jump | S or Down: Slide</div>
+    <div id="ui">
+        <h1>Game Over</h1>
+        <p>Click to Restart</p>
+    </div>
+
+    <!-- Load Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // --- Game Setup ---
+        let scene, camera, renderer, dirLight;
+        let player;
+        let obstacles = [];
+        
+        // --- Day/Night Cycle ---
+        let phaseTimer = 0;
+        let isSahur = false; // Start in Iftar phase
+        
+        let currentColor = new THREE.Color(0x87CEEB);
+        let targetColor = new THREE.Color(0x87CEEB);
+        let iftarColor = new THREE.Color(0x87CEEB);
+        let sahurColor = new THREE.Color(0x0B0C10);
+        
+        let currentLightColor = new THREE.Color(0xFFDED4);
+        let targetLightColor = new THREE.Color(0xFFDED4);
+        let iftarLightColor = new THREE.Color(0xFFDED4);
+        let sahurLightColor = new THREE.Color(0x556688);
+        
+        let currentLightIntensity = 1.0;
+        let targetLightIntensity = 1.0;
+        let iftarLightIntensity = 1.0;
+        let sahurLightIntensity = 0.2;
+
+        let streetLights = [];
+        let currentLampIntensity = 0;
+        let targetLampIntensity = 0;
+        
+        // --- Star Field ---
+        let stars;
+        let starMaterial;
+        let currentStarOpacity = 0;
+        let targetStarOpacity = 0;
+
+        // --- Game Metrics ---
+        let laneWidth = 2.5;
+        let currentLane = 0; // Constraints: -1 (Left), 0 (Middle), 1 (Right)
+        let targetX = 0;
+        
+        let initialSpeed = 15;
+        let speed = initialSpeed; 
+        let clock = new THREE.Clock();
+        
+        let isGameOver = false;
+        let score = 0;
+        
+        // --- Player State ---
+        let vy = 0;
+        let gravity = -35;
+        let isJumping = false;
+        let isSliding = false;
+        let slideTimer = 0;
+        const slideDuration = 0.8; 
+        
+        let spawnTimer = 0;
+        
+        // --- DOM Elements ---
+        const uiElement = document.getElementById('ui');
+        const scoreElement = document.getElementById('scoreBoard');
+        
+        init();
+        animate();
+
+        function init() {
+            // 1. Scene & Fog Setup
+            scene = new THREE.Scene();
+            scene.background = currentColor.clone();
+            scene.fog = new THREE.Fog(currentColor.getHex(), 30, 120); 
+
+            // 2. Camera Setup
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            
+            // 3. Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // 4. Lights
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            
+            dirLight = new THREE.DirectionalLight(currentLightColor.getHex(), currentLightIntensity);
+            dirLight.position.set(20, 40, 0);
+            scene.add(dirLight);
+
+            // Street Lamps (PointLights) along the lanes
+            const bulbGeo = new THREE.SphereGeometry(0.4, 16, 16);
+            const poleGeo = new THREE.CylinderGeometry(0.15, 0.15, 4, 8);
+            const poleMat = new THREE.MeshPhongMaterial({ color: 0x444444 });
+
+            for (let i = 0; i < 6; i++) {
+                let pLight = new THREE.PointLight(0xFFD700, 0, 50); // Warm yellow, start at 0 intensity
+                pLight.position.set((i % 2 === 0 ? -4.5 : 4.5), 4, -i * 30);
+                
+                let pole = new THREE.Mesh(poleGeo, poleMat);
+                pole.position.y = -2; // Pivot is center, so move down 2 units
+                pLight.add(pole);
+
+                let bulbMat = new THREE.MeshStandardMaterial({
+                    color: 0x222222,
+                    emissive: 0xFFD700,
+                    emissiveIntensity: 0
+                });
+                let bulb = new THREE.Mesh(bulbGeo, bulbMat);
+                pLight.add(bulb);
+                pLight.userData.bulbMat = bulbMat;
+
+                scene.add(pLight);
+                streetLights.push(pLight);
+            }
+            
+            // Star Field
+            const starGeo = new THREE.BufferGeometry();
+            const starCount = 100;
+            const starPositions = new Float32Array(starCount * 3);
+            for(let i=0; i<starCount; i++) {
+                starPositions[i*3] = (Math.random() - 0.5) * 200; // x
+                starPositions[i*3+1] = 40 + Math.random() * 60;   // y (high up)
+                starPositions[i*3+2] = (Math.random() - 0.5) * 200; // z
+            }
+            starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+            starMaterial = new THREE.PointsMaterial({
+                color: 0xffffff,
+                size: 0.5,
+                transparent: true,
+                opacity: 0
+            });
+            stars = new THREE.Points(starGeo, starMaterial);
+            scene.add(stars);
+
+            // 5. Environment (Ground & Lanes)
+            const groundGeo = new THREE.PlaneGeometry(laneWidth * 3, 10000);
+            const groundMat = new THREE.MeshPhongMaterial({ color: 0x222222 });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.z = -5000;
+            scene.add(ground);
+
+            // Give visual indication of the 3 lanes
+            for (let i = -1; i <= 1; i++) {
+                const markerGeo = new THREE.PlaneGeometry(0.1, 10000);
+                const markerMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
+                const marker = new THREE.Mesh(markerGeo, markerMat);
+                marker.rotation.x = -Math.PI / 2;
+                marker.position.x = i * laneWidth;
+                marker.position.z = -5000;
+                marker.position.y = 0.01; // Slightly above ground to prevent z-fighting
+                scene.add(marker);
+            }
+
+            // 6. Player Setup (Blue Cube)
+            const playerGeo = new THREE.BoxGeometry(1, 1, 1);
+            const playerMat = new THREE.MeshPhongMaterial({ color: 0x0066ff });
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.position.y = 0.5; // Rest on the ground
+            scene.add(player);
+
+            // 7. Event Listeners
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', onKeyDown);
+            uiElement.addEventListener('click', restartGame);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function onKeyDown(e) {
+            if (isGameOver) return;
+            
+            // Lateral Movement Handles
+            if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+                if (currentLane > -1) currentLane--;
+            } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+                if (currentLane < 1) currentLane++;
+            } 
+            
+            // Vertical Movement Handles
+            else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+                if (!isJumping && !isSliding) {
+                    vy = 14; // Jump force
+                    isJumping = true;
+                }
+            } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+                // If sliding while grounded
+                if (!isJumping && !isSliding) {
+                    isSliding = true;
+                    slideTimer = slideDuration;
+                    player.scale.y = 0.5; // Scale down on Y
+                    player.position.y = 0.25; // Readjust rest pos to floor
+                } 
+                // If fast-falling from a jump
+                else if (isJumping) {
+                    vy -= 20; // Add strong downward velocity
+                }
+            }
+        }
+
+        function spawnObstacle() {
+            const isLow = Math.random() > 0.5;
+            const lane = Math.floor(Math.random() * 3) - 1; // Pick -1, 0, or 1
+            
+            let ox = lane * laneWidth;
+            let oz = player.position.z - 80; // Spawn distance ahead
+            
+            let obGeo, obMat, obMesh;
+            
+            if (isLow) { // Low Obstacle (Red Box) -> Jump Over
+                obGeo = new THREE.BoxGeometry(laneWidth * 0.8, 1, 1);
+                obMat = new THREE.MeshPhongMaterial({ color: 0xff0000 });
+                obMesh = new THREE.Mesh(obGeo, obMat);
+                obMesh.position.set(ox, 0.5, oz);
+            } else { // High Obstacle (Yellow Floating Box) -> Slide Under
+                obGeo = new THREE.BoxGeometry(laneWidth * 0.8, 1.2, 1);
+                obMat = new THREE.MeshPhongMaterial({ color: 0xffff00 });
+                obMesh = new THREE.Mesh(obGeo, obMat);
+                obMesh.position.set(ox, 1.2, oz); // Lowered to ensure collision with standing player
+            }
+            
+            scene.add(obMesh);
+            obstacles.push(obMesh);
+        }
+
+        function restartGame() {
+            isGameOver = false;
+            uiElement.style.display = 'none';
+            score = 0;
+            speed = initialSpeed;
+            
+            player.position.set(0, 0.5, 0);
+            currentLane = 0;
+            vy = 0;
+            isJumping = false;
+            
+            // Reset Day/Night Cycle
+            phaseTimer = 0;
+            isSahur = false;
+            
+            currentColor.copy(iftarColor);
+            currentLightColor.copy(iftarLightColor);
+            currentLightIntensity = iftarLightIntensity;
+            currentLampIntensity = 0;
+            
+            targetColor = iftarColor;
+            targetLightColor = iftarLightColor;
+            targetLightIntensity = iftarLightIntensity;
+            targetLampIntensity = 0;
+            
+            currentStarOpacity = 0;
+            targetStarOpacity = 0;
+            if(starMaterial) starMaterial.opacity = 0;
+            
+            // Re-position street lamps
+            for (let i = 0; i < streetLights.length; i++) {
+                streetLights[i].position.z = -i * 30;
+                streetLights[i].intensity = 0;
+                if(streetLights[i].userData.bulbMat) streetLights[i].userData.bulbMat.emissiveIntensity = 0;
+            }
+            
+            if (isSliding) {
+                isSliding = false;
+                player.scale.y = 1;
+            }
+            
+            // Clean up old obstacles
+            obstacles.forEach(ob => scene.remove(ob));
+            obstacles = [];
+            
+            clock.start(); // reset frame-time metrics
+        }
+
+        function checkCollision() {
+            // Recompute bounding boxes dynamically per frame
+            const playerBox = new THREE.Box3().setFromObject(player);
+            // Slight box shrinkage makes gameplay feel more forgiving / fair
+            playerBox.expandByScalar(-0.1); 
+
+            for (let i = 0; i < obstacles.length; i++) {
+                const obBox = new THREE.Box3().setFromObject(obstacles[i]);
+                if (playerBox.intersectsBox(obBox)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function update(dt) {
+            if (isGameOver) return;
+
+            // Update score
+            score += speed * dt;
+            scoreElement.innerText = "Score: " + Math.floor(score);
+            
+            // Gradually increase difficulty over time
+            speed += dt * 0.3; 
+
+            // 1. Move Forward (Negative Z)
+            player.position.z -= speed * dt;
+
+            // 2. Smooth Lane Transitions (X)
+            targetX = currentLane * laneWidth;
+            player.position.x += (targetX - player.position.x) * 15 * dt;
+
+            // 3. Jump Physics (Y)
+            if (isJumping) {
+                vy += gravity * dt;
+                player.position.y += vy * dt;
+                
+                // Land logic
+                if (player.position.y <= 0.5) {
+                    player.position.y = 0.5;
+                    isJumping = false;
+                    vy = 0;
+                }
+            }
+
+            // 4. Slide Duration Logic (Y scale)
+            if (isSliding) {
+                slideTimer -= dt;
+                if (slideTimer <= 0) {
+                    isSliding = false;
+                    player.scale.y = 1;      // Restore visual size
+                    player.position.y = 0.5; // Restore normal pivot pos if grounded
+                } else if (!isJumping) {
+                    // Force the modified crouch position so long as we aren't mid-air
+                    player.position.y = 0.25; 
+                }
+            }
+
+            // 5. Camera Control 
+            // Follow player gracefully with offset.
+            camera.position.x = player.position.x * 0.7; // slight head tracking towards lane
+            camera.position.y = 4;
+            camera.position.z = player.position.z + 7;
+            camera.lookAt(player.position.x, player.position.y, player.position.z - 15);
+
+            // 6. Obstacle Management
+            spawnTimer -= dt;
+            
+            // Dynamic difficulty - faster we go, faster we spawn (clipped at a min margin)
+            let currentSpawnRate = 1.0 / (speed / initialSpeed);
+            if (spawnTimer <= 0) {
+                spawnObstacle();
+                spawnTimer = Math.max(0.4, currentSpawnRate); 
+            }
+
+            // Remove obstacles once they're behind the camera
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                if (obstacles[i].position.z > player.position.z + 10) {
+                    scene.remove(obstacles[i]);
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // --- Day/Night Cycle Logic ---
+            phaseTimer += dt;
+            if (phaseTimer >= 8) {
+                phaseTimer = 0;
+                isSahur = !isSahur;
+                
+                if (isSahur) { // Switch to Night
+                    targetColor = sahurColor;
+                    targetLightColor = sahurLightColor;
+                    targetLightIntensity = sahurLightIntensity;
+                    targetLampIntensity = 1.0;
+                    targetStarOpacity = 1.0;
+                } else { // Switch to Sunset
+                    targetColor = iftarColor;
+                    targetLightColor = iftarLightColor;
+                    targetLightIntensity = iftarLightIntensity;
+                    targetLampIntensity = 0.0;
+                    targetStarOpacity = 0.0;
+                }
+            }
+            
+            // Smoothly lerp visual properties (factor ~ 0.8 means it takes ~2-3 seconds to transition)
+            currentColor.lerp(targetColor, dt * 0.8);
+            scene.background.copy(currentColor);
+            scene.fog.color.copy(currentColor);
+            
+            currentLightColor.lerp(targetLightColor, dt * 0.8);
+            dirLight.color.copy(currentLightColor);
+            
+            currentLightIntensity += (targetLightIntensity - currentLightIntensity) * dt * 0.8;
+            dirLight.intensity = currentLightIntensity;
+            
+            currentLampIntensity += (targetLampIntensity - currentLampIntensity) * dt * 0.8;
+            
+            currentStarOpacity += (targetStarOpacity - currentStarOpacity) * dt * 0.8;
+            if (starMaterial) {
+                starMaterial.opacity = currentStarOpacity;
+            }
+            
+            // Move Stars with player
+            if (stars) {
+                stars.position.z = player.position.z;
+                stars.position.x = player.position.x;
+            }
+            
+            // Move street lamps like a treadmill so we never run out
+            for (let i = 0; i < streetLights.length; i++) {
+                streetLights[i].intensity = currentLampIntensity;
+                if(streetLights[i].userData.bulbMat) {
+                    streetLights[i].userData.bulbMat.emissiveIntensity = currentLampIntensity * 2;
+                }
+                // If a lamp falls behind camera, teleport it far ahead
+                if (streetLights[i].position.z > player.position.z + 20) {
+                    streetLights[i].position.z -= 180; // 6 lamps * 30 spacing = 180
+                }
+            }
+
+            // 7. Check Collisions Last
+            if (checkCollision()) {
+                isGameOver = true;
+                uiElement.style.display = 'block';
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            let dt = clock.getDelta();
+            
+            // Limit `dt` to prevent collision bugs when returning to a background tab
+            if (dt > 0.1) dt = 0.1;
+
+            update(dt);
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
